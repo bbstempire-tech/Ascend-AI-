@@ -8,7 +8,7 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Método no permitido' });
   }
 
-  const { system, messages, max_tokens } = req.body || {};
+  const { system, messages, max_tokens, task } = req.body || {};
 
   if (!messages || !Array.isArray(messages)) {
     return res.status(400).json({ error: 'Falta el arreglo de mensajes' });
@@ -17,6 +17,11 @@ export default async function handler(req, res) {
   const nvMessages = system
     ? [{ role: 'system', content: system }, ...messages]
     : messages;
+
+  const model = task === 'build' ? 'deepseek-ai/deepseek-v4-pro' : 'meta/llama-3.1-8b-instruct';
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 25000);
 
   try {
     const nvRes = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
@@ -27,13 +32,15 @@ export default async function handler(req, res) {
         'Accept': 'application/json'
       },
       body: JSON.stringify({
-        model: 'meta/llama-3.3-70b-instruct',
+        model,
         messages: nvMessages,
         max_tokens: max_tokens || 1000,
         temperature: 0.6,
         stream: false
-      })
+      }),
+      signal: controller.signal
     });
+    clearTimeout(timeoutId);
 
     if (!nvRes.ok) {
       const errText = await nvRes.text();
@@ -45,6 +52,11 @@ export default async function handler(req, res) {
     const text = data.choices?.[0]?.message?.content || '';
     return res.status(200).json({ text });
   } catch (err) {
+    clearTimeout(timeoutId);
+    if (err.name === 'AbortError') {
+      console.error('NVIDIA API timeout after 25s');
+      return res.status(504).json({ error: 'NVIDIA tardó demasiado en responder. Intenta de nuevo.' });
+    }
     console.error('Server error:', err);
     return res.status(500).json({ error: err.message });
   }
