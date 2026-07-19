@@ -19,9 +19,21 @@ export default async function handler(req, res) {
     : messages;
 
   const model = task === 'build' ? 'deepseek-ai/deepseek-v4-pro' : 'meta/llama-3.1-8b-instruct';
+  const timeoutMs = task === 'build' ? 45000 : 25000;
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 25000);
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  const body = {
+    model,
+    messages: nvMessages,
+    max_tokens: max_tokens || 1000,
+    temperature: 0.6,
+    stream: false
+  };
+  if (task === 'build') {
+    body.extra_body = { chat_template_kwargs: { thinking: false } };
+  }
 
   try {
     const nvRes = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
@@ -31,13 +43,7 @@ export default async function handler(req, res) {
         'Content-Type': 'application/json',
         'Accept': 'application/json'
       },
-      body: JSON.stringify({
-        model,
-        messages: nvMessages,
-        max_tokens: max_tokens || 1000,
-        temperature: 0.6,
-        stream: false
-      }),
+      body: JSON.stringify(body),
       signal: controller.signal
     });
     clearTimeout(timeoutId);
@@ -61,3 +67,4 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: err.message });
   }
 }
+  
