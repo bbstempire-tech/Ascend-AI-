@@ -32,7 +32,7 @@ export default async function handler(req, res) {
     stream: false
   };
   if (task === 'build') {
-    body.extra_body = { chat_template_kwargs: { thinking: false } };
+    body.chat_template_kwargs = { thinking: false };
   }
 
   try {
@@ -67,4 +67,3 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: err.message });
   }
 }
-  
