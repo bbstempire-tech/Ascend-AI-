@@ -2,38 +2,23 @@
 // Backend de Ascend AI: recibe peticiones del frontend y las reenvía a la API
 // gratuita de NVIDIA (NIM), usando la clave guardada como variable de entorno
 // en Vercel (NVIDIA_API_KEY). La clave nunca se expone al navegador.
+//
+// Para la tarea "build" (crear webs), intenta primero con un modelo grande
+// (mejor calidad de código) y si falla o tarda demasiado, cae automáticamente
+// a un modelo más chico y confiable, sin que el usuario tenga que reintentar.
 
-export default async function handler(req, res) {
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Método no permitido' });
-  }
-
-  const { system, messages, max_tokens, task } = req.body || {};
-
-  if (!messages || !Array.isArray(messages)) {
-    return res.status(400).json({ error: 'Falta el arreglo de mensajes' });
-  }
-
-  const nvMessages = system
-    ? [{ role: 'system', content: system }, ...messages]
-    : messages;
-
-  const model = task === 'build' ? 'deepseek-ai/deepseek-v4-pro' : 'meta/llama-3.1-8b-instruct';
-  const timeoutMs = task === 'build' ? 45000 : 25000;
-
+async function callNvidia(model, messages, maxTokens, timeoutMs, extraFields) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   const body = {
     model,
-    messages: nvMessages,
-    max_tokens: max_tokens || 1000,
+    messages,
+    max_tokens: maxTokens,
     temperature: 0.6,
-    stream: false
+    stream: false,
+    ...(extraFields || {})
   };
-  if (task === 'build') {
-    body.chat_template_kwargs = { thinking: false };
-  }
 
   try {
     const nvRes = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
@@ -50,20 +35,63 @@ export default async function handler(req, res) {
 
     if (!nvRes.ok) {
       const errText = await nvRes.text();
-      console.error('NVIDIA API error:', nvRes.status, errText);
-      return res.status(502).json({ error: 'Error al llamar a la API de NVIDIA', detail: errText });
+      throw new Error(`NVIDIA ${model} error ${nvRes.status}: ${errText}`);
     }
 
     const data = await nvRes.json();
-    const text = data.choices?.[0]?.message?.content || '';
-    return res.status(200).json({ text });
+    return data.choices?.[0]?.message?.content || '';
   } catch (err) {
     clearTimeout(timeoutId);
     if (err.name === 'AbortError') {
-      console.error('NVIDIA API timeout after 25s');
-      return res.status(504).json({ error: 'NVIDIA tardó demasiado en responder. Intenta de nuevo.' });
+      throw new Error(`NVIDIA ${model} timeout after ${timeoutMs / 1000}s`);
     }
-    console.error('Server error:', err);
-    return res.status(500).json({ error: err.message });
+    throw err;
+  }
+}
+
+export default async function handler(req, res) {
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Método no permitido' });
+  }
+
+  const { system, messages, max_tokens, task } = req.body || {};
+
+  if (!messages || !Array.isArray(messages)) {
+    return res.status(400).json({ error: 'Falta el arreglo de mensajes' });
+  }
+
+  const nvMessages = system
+    ? [{ role: 'system', content: system }, ...messages]
+    : messages;
+
+  const maxTokens = max_tokens || 1000;
+
+  try {
+    let text;
+
+    if (task === 'build') {
+      // Intento 1: modelo grande, mejor calidad de código, con "thinking" apagado.
+      try {
+        text = await callNvidia(
+          'deepseek-ai/deepseek-v4-pro',
+          nvMessages,
+          maxTokens,
+          30000,
+          { chat_template_kwargs: { thinking: false } }
+        );
+        if (!text) throw new Error('Respuesta vacía de DeepSeek');
+      } catch (primaryErr) {
+        console.error('DeepSeek falló, usando respaldo Llama:', primaryErr.message);
+        // Intento 2 (respaldo): modelo chico y confiable.
+        text = await callNvidia('meta/llama-3.1-8b-instruct', nvMessages, maxTokens, 25000);
+      }
+    } else {
+      text = await callNvidia('meta/llama-3.1-8b-instruct', nvMessages, maxTokens, 25000);
+    }
+
+    return res.status(200).json({ text });
+  } catch (err) {
+    console.error('Server error:', err.message);
+    return res.status(502).json({ error: 'No se pudo obtener respuesta de la IA. Intenta de nuevo.' });
   }
 }
